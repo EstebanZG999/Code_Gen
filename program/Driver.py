@@ -7,6 +7,7 @@ from program.semantic.error_reporter import ErrorReporter
 from program.semantic.table import print_symbol_table
 from program.ir.tac_builder import TACBuilder
 from program.ir.tac_gen import TACGen
+from program.codegen.mips.mips_gen import MIPSGenerator
 
 
 def compile_full_from_text(src: str):
@@ -83,6 +84,19 @@ def main(argv):
     gen = TACGen(checker.symtab, builder)   # ← usa la symtab del checker, no reconstruyas
     gen.visit(tree)
     print(builder.tac)
+    
+    # Si el usuario pide generar MIPS
+    if len(argv) >= 4 and argv[2] in ("--mips", "--emit-mips"):
+        output_file = argv[3]
+        print(f"\n=== Generación de Código MIPS → {output_file} ===")
+
+        mips_gen = MIPSGenerator()
+        asm_code = mips_gen.generate_program(builder.tac)
+
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(asm_code)
+
+        print(f"Código ensamblador guardado en {output_file}")
 
 if __name__ == "__main__":
     main(sys.argv)
