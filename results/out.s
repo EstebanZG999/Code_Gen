@@ -49,11 +49,11 @@ Persona.constructor:
   addiu $fp,$sp,12
   lw t0, 0(None)
   lw t1, 0(None)
-  # TODO: instrucción no implementada: addr_field  (addr_field)
+  # WARN: fallo al traducir quad addr_field t0, 0 -> t2: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'
   sw None, 0(None)
   lw t2, 0(None)
   lw t1, 0(None)
-  # TODO: instrucción no implementada: addr_field  (addr_field)
+  # WARN: fallo al traducir quad addr_field t2, 0 -> t3: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'
   sw None, 0(None)
   move $sp,$fp
   lw $fp,4($sp)
@@ -70,10 +70,12 @@ Persona.saludar:
   addiu $fp,$sp,12
   lw t0, 0(None)
   lw t1, 0(None)
-  # TODO: instrucción no implementada: addr_field  (addr_field)
+  # WARN: fallo al traducir quad addr_field t1, 0 -> t2: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'
   lw t3, 0(None)
   addu t2, None, None
-  # TODO: instrucción no implementada: print  (print)
+  move $a0, None
+  li $v0, 1
+  syscall
   move $sp,$fp
   lw $fp,4($sp)
   lw $ra,8($sp)
@@ -102,7 +104,8 @@ None:
   lw t0, 0(None)
   lw t3, 0(None)
   lw t4, 0(None)
-  # TODO: instrucción no implementada: addr_index  (addr_index)
+  sll $t9, None, 2
+  addu t5, None, $t9
   lw t6, 0(None)
   addu t5, None, None
   sw None, 0(None)

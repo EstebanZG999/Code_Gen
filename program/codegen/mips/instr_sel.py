@@ -123,6 +123,81 @@ class InstructionSelector:
             if a1 and a1 not in ("null",):
                 self.w.emit(f"move $v0, {a1}")
             return
+        
+        if op == "param":
+            # Empuja el parámetro en el stack
+            self.w.emit(f"addi $sp, $sp, -4")
+            self.w.emit(f"sw {a1}, 0($sp)")
+            return
+        
+        if op == "call":
+            func_name = a1
+            n_args = int(a2) if a2 and a2.isdigit() else 0
+
+            self.w.emit(f"jal {func_name}")
+
+            # Limpia los argumentos (n_args * 4 bytes)
+            if n_args > 0:
+                self.w.emit(f"addi $sp, $sp, {n_args * 4}")
+
+            # Si hay destino, guarda el valor retornado ($v0)
+            if dst:
+                self.w.emit(f"move {dst}, $v0")
+            return
+
+        if op == "print":
+            if self._is_const(a1):
+                # Si es una cadena literal
+                if a1.startswith('"'):
+                    label = f"_str_{hash(a1) & 0xFFFF:X}"
+                    self.w.emit(f'.data\n{label}: .asciiz {a1}\n.text')
+                    self.w.emit(f"la $a0, {label}")
+                    self.w.emit(f"li $v0, 4")
+                else:
+                    # Si es un número constante
+                    self.w.emit(f"li $a0, {a1}")
+                    self.w.emit(f"li $v0, 1")
+            else:
+                # Si es una variable (se asume entero)
+                self.w.emit(f"move $a0, {a1}")
+                self.w.emit(f"li $v0, 1")
+
+            self.w.emit("syscall")
+            return
+
+        if op == "addr_field":
+            # dst = base + offset * 4
+            offset = int(a2) * 4
+            self.w.emit(f"addi {dst}, {a1}, {offset}")
+            return
+
+        if op == "addr_index":
+            # dst = base + (i << 2)
+            self.w.emit(f"sll $t9, {a2}, 2")
+            self.w.emit(f"addu {dst}, {a1}, $t9")
+            return
+
+        
+        if op == "alloc":
+            # a1 = bytes a reservar
+            self.w.emit(f"move $a0, {a1}")
+            self.w.emit("li $v0, 9")
+            self.w.emit("syscall")
+            self.w.emit(f"move {dst}, $v0")
+            return
+
+        if op == "alloc_array":
+            # a1 = número de elementos
+            self.w.emit(f"sll $a0, {a1}, 2")   # *4 bytes
+            self.w.emit("li $v0, 9")
+            self.w.emit("syscall")
+            self.w.emit(f"move {dst}, $v0")
+            return
+
+
+
+
+
 
         # Pendientes: param, call, print, addr_field, addr_index, alloc, alloc_array
         raise NotImplementedError(op)
