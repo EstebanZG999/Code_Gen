@@ -4,9 +4,10 @@ cuadrado:
   sw $ra,8($sp)
   sw $fp,12($sp)
   addiu $fp,$sp,12
-  lw t0, 0(None)
-  lw t1, 0(None)
-  mul t2, None, None
+  lw t0, 8($fp)
+  lw t1, 8($fp)
+  mul t2, t0, t1
+  move $v0, t2
   move $sp,$fp
   lw $fp,4($sp)
   lw $ra,8($sp)
@@ -33,7 +34,8 @@ externo.interno:
   sw $ra,8($sp)
   sw $fp,12($sp)
   addiu $fp,$sp,12
-  addu t0, None, None
+  addu t0, a, b
+  move $v0, t0
   move $sp,$fp
   lw $fp,4($sp)
   lw $ra,8($sp)
@@ -89,15 +91,15 @@ promedio:
   sw $ra,8($sp)
   sw $fp,12($sp)
   addiu $fp,$sp,12
-  # TODO: instrucción no implementada: :=  (:=)
-  sw None, 0(None)
-  # TODO: instrucción no implementada: :=  (:=)
-  sw None, 0(None)
+  li t0, 0
+  sw t0, -4($fp)
+  li t0, 0
+  sw t0, -8($fp)
 None:
-  lw t0, 0(None)
-  # TODO: instrucción no implementada: :=  (:=)
-  slt t2, None, None
-  bne None, $zero, None
+  lw t0, -8($fp)
+  li t1, 3
+  slt t2, t0, t1
+  bne t2, $zero, None
   j None
 None:
   lw t1, 0(None)
@@ -110,16 +112,17 @@ None:
   addu t5, None, None
   sw None, 0(None)
 None:
-  lw t5, 0(None)
-  # TODO: instrucción no implementada: :=  (:=)
-  addu t1, None, None
-  sw None, 0(None)
+  lw t5, -8($fp)
+  li t6, 1
+  addu t1, t5, t6
+  sw t1, -8($fp)
   j None
 None:
-  lw t2, 0(None)
-  # TODO: instrucción no implementada: :=  (:=)
-  div None, None
+  lw t2, -4($fp)
+  li t1, 3
+  div t2, t1
   mflo t6
+  move $v0, t6
   move $sp,$fp
   lw $fp,4($sp)
   lw $ra,8($sp)

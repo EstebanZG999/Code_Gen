@@ -7,6 +7,7 @@ program/codegen/__pycache__
 program/codegen/mips/__pycache__/
 tests/semantic/__pycache__/
 tests/ir/__pycache__/
+tests/codegen/__pycache__/
 tests/__pycache__/
 .venv
 .pytest_cache

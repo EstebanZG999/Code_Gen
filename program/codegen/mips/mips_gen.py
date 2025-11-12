@@ -85,8 +85,8 @@ class MIPSGenerator:
         }
         # Algunas IR usan nombres distintos
         for k, alts in {
-            "a1": ["x", "src1", "left"],
-            "a2": ["y", "src2", "right"],
+            "a1": ["x", "src1", "left", "a"],   # <- añade 'a'
+            "a2": ["y", "src2", "right", "b"],  # <- añade 'b'
             "dst": ["result", "target", "dst"],
         }.items():
             if cand[k] is None:
@@ -100,11 +100,16 @@ class MIPSGenerator:
             if cand[k] is not None and not isinstance(cand[k], str):
                 cand[k] = str(cand[k])
 
-        if isinstance(cand["op"], str) and cand["op"]:
-            return cand
 
         # Si ya tenemos op y algo cuadra, retornamos
-        if isinstance(cand["op"], str) and cand["op"]:
+        if cand["op"] == ":=":
+            cand["op"] = "assign"
+
+        # Solo devolvemos por la ruta de atributos si además del 'op'
+        # tenemos al menos un operando resuelto; si no, caemos al fallback por str(q)
+        have_op = isinstance(cand["op"], str) and cand["op"]
+        have_any_arg = any(cand[k] is not None for k in ("a1", "a2", "dst"))
+        if have_op and have_any_arg:
             return cand
 
         # Fallback: parsear str(q)
