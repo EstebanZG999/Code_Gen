@@ -1,9 +1,10 @@
 # program/codegen/mips/reg_alloc.py
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List, Set
 
 T_REGS = [f"$t{i}" for i in range(10)]  # $t0..$t9
 S_REGS = [f"$s{i}" for i in range(8)]   # $s0..$s7
+USE_S_REGS = False   
 
 class RegAllocator:
     """
