@@ -8,18 +8,47 @@ USE_S_REGS = False
 
 class RegAllocator:
     """
-    Asignador simple:
-      - Preferir $t* para temporales.
-      - Si vive a través de call, permitir $s* (y marcar para salvar/restaurar en prolog/epilog).
-      - Si no hay registros, hacer spill: devolver (None, spill_slot_offset) para forzar lw/sw.
+    Asignador simple con spill.
+    API:
+      - attach_frame(frame)          # por función
+      - attach_liveness(liveness)    # liveness por instrucción (lista de conjuntos)
+      - get_reg(name, across_call=False)
+           -> (reg|None, my_spill_off|None, victim|(reg,off)|None)
+      - mark_loaded(name)            # llama después de hacer lw reg, off($fp)
+      - free_if_dead(name, pc=None)  # libera registro si la variable ya no está viva
+      - on_call()                    # cumple convención caller-saved para $t*
+    Notas:
+      * Si devuelve victim=(reg,off), debes emitir `sw reg, off($fp)` antes de usar el nuevo reg.
+      * Si devuelve (None, my_off, _), usa memoria: carga a scratch o almacena desde scratch.
     """
 
-    def __init__(self, frame, liveness=None):
+    def __init__(self, liveness: Optional[List[Set[str]]] = None):
+        self.frame = None
+        # liveness[i] = conjunto de variables vivas DESPUÉS de la instrucción i
+        self.liveness: Optional[List[Set[str]]] = liveness
+        # name -> (reg|None, spill_off|None). Si spill_off!=None, el valor vive en memoria.
+        self.loc: Dict[str, Tuple[Optional[str], Optional[int]]] = {}
+        self.free_t = set()
+        self.free_s = set()
+        self.used_s = set()
+
+    # ------- ciclo de vida por función -------
+
+    def attach_frame(self, frame):
         self.frame = frame
-        self.liveness = liveness or {}
-        self.loc: Dict[str, Tuple[Optional[str], Optional[int]]] = {}  # name -> (reg or None, spill_off or None)
+        self.loc.clear()
         self.free_t = set(T_REGS)
-        self.free_s = set(S_REGS)
+        self.free_s = set(S_REGS) if USE_S_REGS else set()
+        self.used_s = set()
+
+    def attach_liveness(self, liveness: Optional[List[Set[str]]]):
+        """
+        Asigna la tabla de liveness de la función actual.
+        liveness[i] = conjunto de variables vivas DESPUÉS de la instrucción i.
+        """
+        self.liveness = liveness
+
+    # ------- utilitarios internos -------
 
     def _spill_victim(self) -> Optional[str]:
         # Política mínima: víctima = algún $t* ocupado con next-use lejano o None
