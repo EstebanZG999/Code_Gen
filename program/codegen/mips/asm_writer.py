@@ -19,10 +19,14 @@ class AsmWriter:
             self.in_data = True
 
     def label(self, name: str):
-        self.lines.append(f"{name}:")
+        self.lines.append(f"{name}:")   # sin indent, correcto
 
     def emit(self, instr: str):
-        self.lines.append(f"  {instr}")
+        self.lines.append(f"  {instr}") # con indent
+
+    # para líneas sin indent (lo usaremos en 'goto' por el test)
+    def emit_raw(self, line: str):
+        self.lines.append(line)
 
     def dump(self) -> str:
         return "\n".join(self.lines) + "\n"
