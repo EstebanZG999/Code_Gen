@@ -51,43 +51,72 @@ class RegAllocator:
     # ------- utilitarios internos -------
 
     def _spill_victim(self) -> Optional[str]:
-        # Política mínima: víctima = algún $t* ocupado con next-use lejano o None
+        """
+        Política mínima: escoge el primer $t* ocupado en orden T_REGS.
+        """
         for r in T_REGS:
             if r not in self.free_t:
                 return r
         return None
 
     def _spill(self, reg: str):
-        # Encuentra quién tenía 'reg', le asigna spill slot y lo libera
+        """
+        Mapea reg -> name y asigna spill si no tenía.
+        Devuelve (nombre_variable, off_spill).
+        """
         for name, (r, off) in self.loc.items():
             if r == reg:
                 if off is None:
                     off = self.frame.alloc_spill()
-                    self.loc[name] = (None, off)
+                self.loc[name] = (None, off)
                 self.free_t.add(reg)
                 return name, off
         return None, None
 
-    def get_reg(self, name: str, across_call: bool = False) -> Tuple[Optional[str], Optional[int], Optional[Tuple[str,int]]]:
+    # ------- API principal -------
+
+    def get_reg(
+        self,
+        name: str,
+        across_call: bool = False
+    ) -> Tuple[Optional[str], Optional[int], Optional[Tuple[str, int]]]:
         """
         Devuelve:
-         - reg asignado (o None si debe usarse memoria),
-         - spill_slot propio si no cabe en registros,
-         - (victim_reg, victim_spill_off) si hubo que hacer spill de una víctima (para que el caller emita sw).
+          reg   = registro físico donde vivirá 'name', o None si se trabajará desde memoria.
+          off   = offset de spill (si el valor está en memoria y hay que hacer lw/sw).
+          victim= (reg_víctima, off_víctima) si hubo que hacer spill de algún registro.
         """
-        # Ya asignado
+
+        # Ya en registro
         if name in self.loc and self.loc[name][0] is not None:
             return self.loc[name][0], None, None
 
-        # Intentar $t* si no cruza call
+        # Estaba derramado -> asigna reg y devuelve offset para que hagas lw
+        if name in self.loc and self.loc[name][0] is None and self.loc[name][1] is not None:
+            off = self.loc[name][1]
+            # intenta $t* primero (si no across_call)
+            if not across_call and self.free_t:
+                r = self.free_t.pop()
+                self.loc[name] = (r, off)   # pendiente de cargar
+                return r, off, None
+            # usa $s* si está habilitado
+            if self.free_s:
+                r = self.free_s.pop()
+                self.used_s.add(r)
+                self.loc[name] = (r, off)
+                return r, off, None
+            # sin registros: sigue en memoria
+            return None, off, None
+
+        # Nuevo símbolo: intenta $t* / $s*
         if not across_call and self.free_t:
             r = self.free_t.pop()
             self.loc[name] = (r, None)
             return r, None, None
 
-        # Intentar $s* si cruza call (o no quedan $t)
         if self.free_s:
             r = self.free_s.pop()
+            self.used_s.add(r)
             self.loc[name] = (r, None)
             return r, None, None
 
@@ -95,20 +124,67 @@ class RegAllocator:
         victim = self._spill_victim()
         if victim:
             vname, voff = self._spill(victim)
-            # El actual no obtiene reg, forzar uso de memoria
+            # Slot propio para 'name'
             my_off = self.frame.alloc_spill()
             self.loc[name] = (None, my_off)
             return None, my_off, (victim, voff)
 
-        # No hay nada que hacer: memoria
+        # Todo lleno: trabaja en memoria
         my_off = self.frame.alloc_spill()
         self.loc[name] = (None, my_off)
         return None, my_off, None
 
-    def free_if_dead(self, name: str):
+    def mark_loaded(self, name: str):
         reg, off = self.loc.get(name, (None, None))
-        if reg and reg in T_REGS:
+        if reg is not None:
+            # ya se hizo lw reg,off($fp), así que ya no necesitamos el offset
+            self.loc[name] = (reg, None)
+
+    def free_if_dead(self, name: str, pc: Optional[int] = None):
+        """
+        Libera el registro asociado a 'name' si ya no está vivo DESPUÉS de la instrucción pc.
+        - name: nombre de variable en la IR.
+        - pc: índice de la instrucción actual (0-based).
+        Si no hay info de liveness, no hace nada (comportamiento seguro).
+        """
+        # Sin liveness o sin pc: comportamiento conservador (no liberar).
+        if self.liveness is None or pc is None:
+            return
+
+        if name not in self.loc:
+            return
+
+        if pc < 0 or pc >= len(self.liveness):
+            return
+
+        live_after = self.liveness[pc]
+        if name in live_after:
+            # La variable sigue viva después de esta instrucción: no liberamos.
+            return
+
+        # En este punto, 'name' está muerto: podemos liberar su registro.
+        reg, off = self.loc.pop(name)
+
+        if reg in T_REGS:
             self.free_t.add(reg)
-        if reg and reg in S_REGS:
+        elif reg in S_REGS:
             self.free_s.add(reg)
-        # dejamos mapeo por si reusamos spill; en un alloc más avanzado podríamos limpiar
+            self.used_s.discard(reg)
+        # Si no tenía registro, no hay nada que hacer (su valor solo estaba en memoria).
+
+    def on_call(self):
+        """
+        Convención caller-saved: devolver lista de (reg, off) para guardar antes del jal.
+        Luego marca esos temporales como derramados y libera $t*.
+        """
+        saves = []
+        for name, (r, off) in list(self.loc.items()):
+            if r in T_REGS:
+                if off is None:
+                    off = self.frame.alloc_spill()
+                # pedir al caller: sw r, off($fp)
+                saves.append((r, off))
+                # marcar como derramado
+                self.loc[name] = (None, off)
+        self.free_t = set(T_REGS)
+        return saves
