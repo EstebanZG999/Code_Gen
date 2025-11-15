@@ -318,40 +318,57 @@ class InstructionSelector:
 
         # PARAM/CALL
         if op == "param":
-            rs = self._read_into_reg(a1, "$t7")
-            self.w.emit("addi $sp, $sp, -4")
-            self.w.emit(f"sw {rs}, 0($sp)")
-            self.ra.free_if_dead(a1, pc)
+            # Solo acumulamos el nombre del parámetro.
+            # Los pushes reales a la pila se hacen en 'call'.
+            if a1 is not None:
+                self.pending_params.append(a1)
             return
 
         if op == "call":
-            # caller-saved: pedir a RA qué $t* guardar
+            # 0) Número de parámetros acumulados
+            param_count = len(self.pending_params)
+
+            # 1) Empujar parámetros en orden inverso
+            #    IR: param p1, param p2, call f
+            #    En stack (de arriba hacia abajo): p1, p2
+            for pname in reversed(self.pending_params):
+                # En tu IR los params deberían ser temporales/vars, no literales.
+                # Así que podemos leerlos normal:
+                rs = self._read_into_reg(pname, "$t7")
+                self.w.emit("addi $sp, $sp, -4")
+                self.w.emit(f"sw {rs}, 0($sp)")
+                # Liberar aquí según liveness
+                self.ra.free_if_dead(pname, pc)
+
+            # Limpiamos la lista de params para la siguiente llamada
+            self.pending_params.clear()
+
+            # 2) caller-saved: pedir a RA qué $t* guardar
             saves = self.ra.on_call()
             for reg, off in saves:
                 self.w.emit(f"sw {reg}, {off}($fp)")
 
-            # nombre base (por si viene con comillas)
+            # 3) nombre base (por si viene con comillas)
             fname = a1.strip('"') if a1 else a1
 
             # Resolución contra la lista de funciones conocidas
             if self.known_funcs and fname not in self.known_funcs and "." in fname:
                 parts = fname.split(".")
-                # probamos quitar prefijos de izquierda a derecha: "cuadruple.doble" -> "doble"
                 for i in range(1, len(parts)):
                     candidate = ".".join(parts[i:])
                     if candidate in self.known_funcs:
                         fname = candidate
                         break
 
-            # llamar
+            # 4) llamar
             self.w.emit(f"jal {fname}")
 
-            # limpiar args apilados
-            n = int(a2) if a2 and a2.isdigit() else 0
+            # 5) limpiar args apilados
+            n = int(a2) if a2 and a2.isdigit() else param_count
             if n > 0:
                 self.w.emit(f"addi $sp, $sp, {n*4}")
 
-            # recoger retorno
+            # 6) recoger retorno
             if dst:
                 rd, off, sc = self._dest_reg_or_spill(dst)
                 if rd:
@@ -359,6 +376,7 @@ class InstructionSelector:
                 else:
                     self.w.emit(f"sw $v0, {off}($fp)")
             return
+
 
         # DIRECCIONES / MEMORIA DINÁMICA
         if op == "addr_field":
@@ -454,6 +472,30 @@ class InstructionSelector:
         
         # PRINT
         if op == "print":
+            # --- CASO ESPECIAL: print de resultado de "string" + int ---
+            if a1 in self.concat_prefix:
+                prefix = self.concat_prefix[a1]
+
+                # 1) imprimir el prefijo (string literal)
+                label = f"_str_{hash(prefix) & 0xFFFF:X}"
+                self.w.data()
+                self.w.label(label)
+                self.w.emit(f".asciiz {prefix}")
+                self.w.text()
+                self.w.emit(f"la $a0, {label}")
+                self.w.emit("li $v0, 4")
+                self.w.emit("syscall")
+
+                # 2) imprimir el valor numérico guardado en 'a1'
+                rs = self._read_into_reg(a1)
+                self.w.emit(f"move $a0, {rs}")
+                self.w.emit("li $v0, 1")
+                self.w.emit("syscall")
+
+                self.ra.free_if_dead(a1, pc)
+                return
+
+            # --- CASO NORMAL ---
             if self._is_const(a1):
                 # Literal de cadena
                 if a1.startswith('"') and a1.endswith('"'):
@@ -475,7 +517,6 @@ class InstructionSelector:
                 rs = self._read_into_reg(a1)
                 self.w.emit(f"move $a0, {rs}")
                 if a1 in self.string_vars:
-                    # Fue asignada desde un literal "...", asumimos string
                     self.w.emit("li $v0, 4")   # print string
                 else:
                     self.w.emit("li $v0, 1")   # print int
