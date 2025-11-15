@@ -350,7 +350,7 @@ class TACGen(CompiscriptVisitor):
     def visitAssignment(self, ctx):
         exprs = ctx.expression()
         if isinstance(exprs, list) and len(exprs) == 2:
-            # obj.prop = expr  (tu código actual está bien, pero usa _value_of_name para la base)
+            # obj.prop = expr   (incluye this.prop dentro de métodos/clases)
             obj = self.visit(exprs[0])
             prop = ctx.Identifier().getText()
             val = self.visit(exprs[1])
@@ -361,9 +361,19 @@ class TACGen(CompiscriptVisitor):
                 base_addr = self._addr_of_name(base_op.name)
                 base_op = self.b.gen_load_addr(base_addr).value if base_addr else base_op
 
-            # tipo del objeto (solo intentamos con el global para no depender del scope dinámico)
+            # Determinar el tipo del objeto
             obj_type_name = None
-            if isinstance(obj.value, Var):
+
+            # Caso especial: this.prop dentro de un método de clase
+            if isinstance(obj.value, Var) and obj.value.name == "this":
+                # fn_stack[0] suele ser "Persona.constructor" o "Persona.saludar"
+                cls_name = None
+                if self.fn_stack and "." in self.fn_stack[0]:
+                    cls_name = self.fn_stack[0].split(".", 1)[0]
+                obj_type_name = cls_name
+
+            # Caso general: variable global/normal
+            elif isinstance(obj.value, Var):
                 root = self.symtab.scope_stack.stack[0]
                 var_sym = root.resolve(obj.value.name)
                 obj_type_name = var_sym.type.name if isinstance(var_sym, VarSymbol) else None
