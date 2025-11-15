@@ -348,25 +348,30 @@ class InstructionSelector:
         # PRINT
         if op == "print":
             if self._is_const(a1):
-                # Cadena literal
-                if a1.startswith('"'):
+                # Literal de cadena
+                if a1.startswith('"') and a1.endswith('"'):
                     label = f"_str_{hash(a1) & 0xFFFF:X}"
-                    # Cambia a .data, emite etiqueta y .asciiz, vuelve a .text
+                    # Definimos el string en .data
                     self.w.data()
                     self.w.label(label)
                     self.w.emit(f".asciiz {a1}")
+                    # Volvemos a .text y lo imprimimos como string
                     self.w.text()
                     self.w.emit(f"la $a0, {label}")
-                    self.w.emit("li $v0, 4")
+                    self.w.emit("li $v0, 4")   # print string
                 else:
                     # Número constante
                     self.w.emit(f"li $a0, {a1}")
-                    self.w.emit("li $v0, 1")
+                    self.w.emit("li $v0, 1")   # print int
             else:
-                # Variable: carga a registro y luego imprime entero
+                # Variable: puede ser int o puntero a string
                 rs = self._read_into_reg(a1)
                 self.w.emit(f"move $a0, {rs}")
-                self.w.emit("li $v0, 1")
+                if a1 in self.string_vars:
+                    # Fue asignada desde un literal "...", asumimos string
+                    self.w.emit("li $v0, 4")   # print string
+                else:
+                    self.w.emit("li $v0, 1")   # print int
 
             self.w.emit("syscall")
             self.ra.free_if_dead(a1, pc)
