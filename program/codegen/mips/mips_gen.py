@@ -461,37 +461,62 @@ class MIPSGenerator:
     # ---------- Generación completa ----------
     def generate(self, tac_program) -> str:
         """
-        Punto de entrada: recibe el TAC “plano”, lo parte en funciones,
-        y emite ASM para cada una con prólogo/epílogo y selección de instrucciones.
+        Punto de entrada: recibe el TAC “plano”, lo parte en funciones
+        (incluyendo un posible 'main' de nivel superior),
+        y emite ASM para cada una.
         """
         functions = self._split_functions(tac_program)
 
         for f in functions:
-            # Preparar frame y re-anclar el RA a esta función
             frame = Frame(func_name=f.name)
             self.ra.attach_frame(frame)
 
-            # Calcular liveness para la función y pasarlo al RA
             func_liveness = self._compute_liveness(f.quads)
             self.ra.attach_liveness(func_liveness)
 
-            # Etiqueta de función + prólogo
-            self.writer.label(f.name)
-            self._emit_prolog(frame)
+            # 🔹 Detectar variables que almacenan punteros a strings
+            string_vars: Set[str] = set()
+            for nq in f.quads:
+                # nq ya es un dict normalizado: {"op","a1","a2","dst","label"}
+                if (
+                    nq["op"] == "assign"
+                    and nq["a1"] is not None
+                    and isinstance(nq["a1"], str)
+                    and nq["a1"].startswith('"')
+                    and nq["a1"].endswith('"')
+                    and nq["dst"] is not None
+                ):
+                    string_vars.add(nq["dst"])
 
-            # Cuerpo: instrucción por instrucción (con índice)
-            sel = InstructionSelector(self.writer, self.ra, frame)
-            for idx, nq in enumerate(f.quads):
-                sel.select_for_quad(nq, idx)
+            # Pasamos string_vars al selector
+            sel = InstructionSelector(self.writer, self.ra, frame, string_vars=string_vars)
 
-            # Epílogo
-            self._emit_epilog(frame)
+            if f.name == "main":
+                # --- main con PRÓLOGO pero sin jr $ra ---
+                self.writer.text()
+                self.writer.emit_raw(".globl main")
+                self.writer.label("main")
+                self._emit_prolog(frame)
 
-            # Separador visual
+                for idx, nq in enumerate(f.quads):
+                    sel.select_for_quad(nq, idx)
+
+                # En vez de epílogo normal, salimos del programa
+                self.writer.emit("li $v0, 10")
+                self.writer.emit("syscall")
+            else:
+                # --- funciones normales ---
+                self.writer.label(f.name)
+                self._emit_prolog(frame)
+
+                for idx, nq in enumerate(f.quads):
+                    sel.select_for_quad(nq, idx)
+
+                self._emit_epilog(frame)
+
             self.writer.emit("")
             self.writer.emit("# ----------------")
 
-        # Devuelve todo el texto ensamblado
         return self.writer.dump()
 
     # --- Alias para compatibilidad con tests ---
