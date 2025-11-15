@@ -86,6 +86,20 @@ class InstructionSelector:
 
         op, a1, a2, dst, lab = q["op"], q["a1"], q["a2"], q["dst"], q["label"]
 
+        # --- Saneamiento defensivo de labels (por si _normalize dejó cosas raras) ---
+        if op == "goto":
+            # si a1 viene vacío pero dst trae el label, usamos dst
+            if (a1 is None or a1 == "None") and dst is not None:
+                a1 = dst
+
+        if op in ("ifgoto", "if_goto"):
+            # if t goto L: el label puede venir en a2, o a veces en dst
+            if (a2 is None or a2 == "None"):
+                if dst is not None and dst != "None":
+                    a2 = dst
+                elif lab is not None and lab != "None":
+                    a2 = lab
+
         # LABEL
         if op == "label":
             self.w.label(lab); return
