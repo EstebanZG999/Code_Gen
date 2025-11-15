@@ -21,34 +21,55 @@ class TACGen(CompiscriptVisitor):
         """Devuelve el FuncSymbol de la función/metodo actual usando self.fn_stack."""
         if not self.fn_stack:
             return None
+
         q = self.fn_stack[-1]
         root = self.symtab.scope_stack.stack[0]  # scope global
 
-        if "." in q:  # Clase.metodo
+        # Intentar nombre completo tal cual
+        sym = root.resolve(q)
+        if isinstance(sym, FuncSymbol):
+            return sym
+
+        # Caso Clase.metodo
+        if "." in q:
             cls_name, mname = q.split(".", 1)
             cls_sym = root.resolve(cls_name)
             if isinstance(cls_sym, ClassSymbol):
                 return cls_sym.methods.get(mname)
-            return None
-        # función toplevel
-        sym = root.resolve(q)
-        return sym if isinstance(sym, FuncSymbol) else None
 
-    def _addr_of_name(self, name: str):
-        """Devuelve Addr(fp, offset) si 'name' vive en el AR de la función actual, si no None."""
-        fn = self._current_fn_sym()
-        if fn and fn.activation_record:
-            slot = fn.activation_record.addr_of(name)  # tu AR devuelve algo con 'offset'
-            if slot:
-                return Addr("fp", int(slot.offset))
         return None
 
+
+    def _addr_of_name(self, name: str):
+        """
+        Devuelve Addr("fp", offset_en_palabras) si 'name' vive en el AR
+        de la función actual (param/local/this). Si no, None.
+        """
+        fn = self._current_fn_sym()
+        if not fn or not getattr(fn, "activation_record", None):
+            return None
+
+        slot = fn.activation_record.addr_of(name)
+        if slot is None:
+            return None
+
+        # soportar tanto slot.offset como un entero directo
+        off_words = getattr(slot, "offset", slot)
+        return Addr("fp", int(off_words))
+
+
     def _value_of_name(self, name: str) -> ExprResult:
-        """Lee una variable: si está en el frame (param/local/this) => load &(fp+off); si no, Var(name)."""
+        """
+        Lee una variable:
+          - si está en el frame (param/local/this) => genera load [fp+off] -> temp
+          - si no, se trata como Var(name) (global o cosa especial).
+        """
         addr = self._addr_of_name(name)
-        if addr:
+        if addr is not None:
+            # genera TAC: load [fp+N] -> tX
             return self.b.gen_load_addr(addr)
-        # global/const u otros símbolos
+
+        # global/const u otros símbolos que no tienen entrada en el AR
         return ExprResult(Var(name), is_temp=False)
 
     def visitLiteralExpr(self, ctx: CompiscriptParser.LiteralExprContext):
@@ -329,7 +350,7 @@ class TACGen(CompiscriptVisitor):
     def visitAssignment(self, ctx):
         exprs = ctx.expression()
         if isinstance(exprs, list) and len(exprs) == 2:
-            # obj.prop = expr  (tu código actual está bien, pero usa _value_of_name para la base)
+            # obj.prop = expr   (incluye this.prop dentro de métodos/clases)
             obj = self.visit(exprs[0])
             prop = ctx.Identifier().getText()
             val = self.visit(exprs[1])
@@ -340,9 +361,19 @@ class TACGen(CompiscriptVisitor):
                 base_addr = self._addr_of_name(base_op.name)
                 base_op = self.b.gen_load_addr(base_addr).value if base_addr else base_op
 
-            # tipo del objeto (solo intentamos con el global para no depender del scope dinámico)
+            # Determinar el tipo del objeto
             obj_type_name = None
-            if isinstance(obj.value, Var):
+
+            # Caso especial: this.prop dentro de un método de clase
+            if isinstance(obj.value, Var) and obj.value.name == "this":
+                # fn_stack[0] suele ser "Persona.constructor" o "Persona.saludar"
+                cls_name = None
+                if self.fn_stack and "." in self.fn_stack[0]:
+                    cls_name = self.fn_stack[0].split(".", 1)[0]
+                obj_type_name = cls_name
+
+            # Caso general: variable global/normal
+            elif isinstance(obj.value, Var):
                 root = self.symtab.scope_stack.stack[0]
                 var_sym = root.resolve(obj.value.name)
                 obj_type_name = var_sym.type.name if isinstance(var_sym, VarSymbol) else None

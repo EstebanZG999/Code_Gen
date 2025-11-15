@@ -72,6 +72,9 @@ class MIPSGenerator:
         w = self.writer
         fs = frame.frame_size()
 
+        if fs < 128:
+            fs = 128
+
         w.text()
         w.emit(f"# --- prologo de {frame.func_name} ---")
 
@@ -158,6 +161,10 @@ class MIPSGenerator:
         # Normaliza ":=" a "assign"
         if cand["op"] == ":=":
             cand["op"] = "assign"
+
+        # Normalizar nombre de función en llamadas: quitar comillas si vienen de la IR
+        if cand["op"] == "call" and cand["a1"]:
+            cand["a1"] = cand["a1"].strip('"')
 
         # Si dice ser 'label' pero no trae nombre, intenta derivarlo del texto
         if cand["op"] == "label" and not cand["label"]:
@@ -255,15 +262,19 @@ class MIPSGenerator:
     def _split_functions(self, tac_program) -> List[FuncIR]:
         """
         Recorre tac_program.code (lista de quads/labels).
-        Crea FuncIRs cuando detecta 'func_<name>_entry:' y cierra al ver 'func_<name>_end:'.
-        Si no hay marcas de función, asume todo como 'main'.
+        Crea FuncIRs cuando detecta 'func_<name>_entry' / 'func_<name>_end'.
+        Además, cualquier TAC que quede fuera de funciones se mete en un 'main'.
         """
         code: List[Any] = getattr(tac_program, "code", [])
         funcs: List[FuncIR] = []
         cur: Optional[FuncIR] = None
 
+        # TAC de nivel superior (top-level, fuera de cualquier func_..._entry/_end)
+        top_level: List[Any] = []
+
         for q in code:
             txt = str(q).strip()
+
             if txt.endswith(":"):
                 lab = txt[:-1]
                 # Abrir función
@@ -277,14 +288,20 @@ class MIPSGenerator:
                     cur = None
                     continue
 
-            # Acumular quads de la función abierta
+            # Estamos dentro de una función
             if cur is not None:
                 cur.quads.append(self._normalize_quad(q))
+            else:
+                # Estamos fuera de cualquier función: esto es código top-level
+                top_level.append(self._normalize_quad(q))
 
-        # Caso sin etiquetas de función: todo es 'main'
-        if not funcs and code:
-            funcs.append(FuncIR("main", [self._normalize_quad(q) for q in code]))
+        # Si hay código top-level, lo convertimos en función 'main'
+        if top_level:
+            main_ir = FuncIR("main", top_level)
+            # Queremos que main vaya primero en el archivo ASM
+            funcs.insert(0, main_ir)
 
+        # Caso extremo: sin funciones ni top-level, devolvemos lista vacía
         return funcs
 
     # ---------- Análisis de liveness ----------
@@ -444,39 +461,89 @@ class MIPSGenerator:
     # ---------- Generación completa ----------
     def generate(self, tac_program) -> str:
         """
-        Punto de entrada: recibe el TAC “plano”, lo parte en funciones,
-        y emite ASM para cada una con prólogo/epílogo y selección de instrucciones.
+        Punto de entrada: recibe el TAC “plano”, lo parte en funciones
+        (incluyendo un posible 'main' de nivel superior),
+        y emite ASM para cada una.
         """
         functions = self._split_functions(tac_program)
 
+        # Conjunto de nombres de funciones que realmente existen como labels
+        known_funcs: Set[str] = {f.name for f in functions}
+
         for f in functions:
-            # Preparar frame y re-anclar el RA a esta función
             frame = Frame(func_name=f.name)
             self.ra.attach_frame(frame)
 
-            # Calcular liveness para la función y pasarlo al RA
             func_liveness = self._compute_liveness(f.quads)
             self.ra.attach_liveness(func_liveness)
 
-            # Etiqueta de función + prólogo
-            self.writer.label(f.name)
-            self._emit_prolog(frame)
+            # 🔹 Detectar variables que almacenan punteros a strings
+            string_vars: Set[str] = set()
+            for nq in f.quads:
+                # nq ya es un dict normalizado: {"op","a1","a2","dst","label"}
+                if (
+                    nq["op"] == "assign"
+                    and nq["a1"] is not None
+                    and isinstance(nq["a1"], str)
+                    and nq["a1"].startswith('"')
+                    and nq["a1"].endswith('"')
+                    and nq["dst"] is not None
+                ):
+                    string_vars.add(nq["dst"])
 
-            # Cuerpo: instrucción por instrucción (con índice)
-            sel = InstructionSelector(self.writer, self.ra, frame)
-            for idx, nq in enumerate(f.quads):
-                sel.select_for_quad(nq, idx)
+            # Pasamos string_vars y known_funcs al selector
+            sel = InstructionSelector(
+                self.writer,
+                self.ra,
+                frame,
+                known_funcs=known_funcs,
+                string_vars=string_vars,
+            )
 
-            # Epílogo
-            self._emit_epilog(frame)
+            if f.name == "main":
+                # --- main con PRÓLOGO pero sin jr $ra ---
+                self.writer.text()
+                self.writer.emit_raw(".globl main")
+                self.writer.label("main")
+                self._emit_prolog(frame)
 
-            # Separador visual
+                for idx, nq in enumerate(f.quads):
+                    sel.select_for_quad(nq, idx)
+
+                # En vez de epílogo normal, salimos del programa
+                self.writer.emit("li $v0, 10")
+                self.writer.emit("syscall")
+            else:
+                # --- funciones normales ---
+                self.writer.label(f.name)
+                self._emit_prolog(frame)
+
+                for idx, nq in enumerate(f.quads):
+                    sel.select_for_quad(nq, idx)
+
+                self._emit_epilog(frame)
+
             self.writer.emit("")
             self.writer.emit("# ----------------")
 
-        # Devuelve todo el texto ensamblado
         return self.writer.dump()
 
     # --- Alias para compatibilidad con tests ---
     def generate_program(self, tac_program) -> str:
-        return self.generate(tac_program)
+        asm = self.generate(tac_program)
+
+        footer = """
+            .data
+        _str_MISALIGNED:
+            .asciiz "MISALIGNED!\\n"
+
+            .text
+            __misaligned_store:
+            la $a0, _str_MISALIGNED
+            li $v0, 4
+            syscall
+
+            li $v0, 10
+            syscall
+        """
+        return asm + footer

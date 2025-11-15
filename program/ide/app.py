@@ -15,6 +15,8 @@ from program.semantic.symbols import FuncSymbol, ClassSymbol, VarSymbol
 from program.semantic.table import SymbolTable
 from program.ir.tac_builder import TACBuilder
 from program.ir.tac_gen import TACGen
+from program.codegen.mips.mips_gen import MIPSGenerator
+
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -122,15 +124,15 @@ def render_scopes(scopes):
                     })
 
 
-                # Activation Record (si existe)
                 if getattr(sym, "activation_record", None):
                     ar = sym.activation_record
                     with st.expander(f"AR de {sym.name}"):
                         st.write(
-                            f"**has_this**={ar.has_this}, "
-                            f"**params_size**={ar.params_size}, "
-                            f"**locals_size**={ar.locals_size}, "
-                            f"**frame_size**={ar.frame_size}"
+                            f"**has_this**={getattr(ar, 'has_this', None)}, "
+                            f"**frame_size**={getattr(ar, 'frame_size', None)}, "
+                            f"**locals_size**={getattr(ar, 'locals_size', None)}, "
+                            f"**frame_size**={getattr(ar, 'frame_size', None)}"
+
                         )
 
             # --- Si es clase, listar campos y métodos ---
@@ -266,6 +268,8 @@ with col_a:
 with col_b:
     show_tree = st.checkbox("Árbol sintáctico", value=True)
     show_tac  = st.checkbox("Generar TAC", value=True)
+    show_mips = st.checkbox("Generar MIPS", value=True)
+
 with col_c:
     max_nodes = st.slider("Límite de nodos del árbol", min_value=200, max_value=5000, value=2000, step=100)
 
@@ -295,6 +299,33 @@ if do_compile:
 
     # Tabla de símbolos por scope
     render_scopes(scopes)
+
+    # === Generación de MIPS (solo si no hay errores) ===
+    if show_mips and not reporter.has_errors():
+
+        # Asegurar que builder existe aunque TAC no se muestre
+        if not show_tac:
+            builder = TACBuilder()
+            gen = TACGen(symtab, builder)
+            gen.visit(tree)
+
+        st.subheader("Código MIPS (ASM)")
+
+        mips_gen = MIPSGenerator()
+        asm_code = mips_gen.generate_program(builder.tac)
+
+        # Mostrar el ASM en el IDE
+        st.code(asm_code, language="mips")
+
+        # Botón para descargar sin escribir archivo local
+        st.download_button(
+            label="Descargar ASM (out.s)",
+            data=asm_code,
+            file_name="out.s",
+            mime="text/plain"
+        )
+
+
 
 
     # mostrar parámetros de cada función declarada en el scope global
