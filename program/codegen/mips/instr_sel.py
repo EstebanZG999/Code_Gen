@@ -281,14 +281,21 @@ class InstructionSelector:
 
         if op == "addr_index":
             # dst = base + (i << 2)
-            rb = self._read_into_reg(a1, "$t7")
+            rb = self._read_into_reg(a1, "$t7")  
             ri = self._read_into_reg(a2, "$t6")
             rd, off, sc = self._dest_reg_or_spill(dst, "$t5")
             out = rd if rd is not None else sc
-            self.w.emit(f"sll $t9, {ri}, 2")
-            self.w.emit(f"addu {out}, {rb}, $t9")
-            if off is not None: self.w.emit(f"sw {out}, {off}($fp)")
-            self.ra.free_if_dead(a1, pc); self.ra.free_if_dead(a2, pc)
+
+            # out = i << 2
+            self.w.emit(f"sll {out}, {ri}, 2")
+            # out = base + (i << 2)
+            self.w.emit(f"addu {out}, {rb}, {out}")
+
+            if off is not None:
+                self.w.emit(f"sw {out}, {off}($fp)")
+
+            self.ra.free_if_dead(a1, pc)
+            self.ra.free_if_dead(a2, pc)
             return
 
         if op == "alloc":
