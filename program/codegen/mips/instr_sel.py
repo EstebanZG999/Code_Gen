@@ -4,11 +4,13 @@ from typing import Dict
 import re
 
 class InstructionSelector:
-    def __init__(self, writer, reg_alloc, frame):
+    def __init__(self, writer, reg_alloc, frame, string_vars=None):
         self.w = writer
         self.ra = reg_alloc
         self.frame = frame
         self.pc = 0
+        # conjunto de nombres de variables que guardan direcciones de strings
+        self.string_vars = set(string_vars or [])
 
     # -------- helpers --------
     def _is_const(self, x: str) -> bool:
