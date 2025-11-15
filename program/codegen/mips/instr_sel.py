@@ -139,34 +139,49 @@ class InstructionSelector:
             self.ra.free_if_dead(a1, pc)
             return
 
-        # LOAD por dirección explícita
+        # LOAD
         if op == "load":
+            # Caso 1: dirección explícita [fp+N] (Addr(fp, k) -> "[fp+k]")
             if isinstance(a1, str) and a1.startswith("["):
                 base, byte_off = self._mem_addr(a1)
-                self.w.emit(f"lw {dst}, {byte_off}(${base})")
-            else:
-                # load var -> dst 
-                rs = self._read_into_reg(a1)
                 rd, off, sc = self._dest_reg_or_spill(dst)
-                if rd: self.w.emit(f"move {rd}, {rs}")
-                else:  self.w.emit(f"sw {rs}, {off}($fp)")
+                out = rd if rd is not None else sc
+                # cargar desde [base+off] al registro 'out'
+                self.w.emit(f"lw {out}, {byte_off}(${base})")
+                # si no había registro para dst, guardamos el scratch en el spill
+                if off is not None:
+                    self.w.emit(f"sw {out}, {off}($fp)")
+            else:
+                # Caso 2: load ptr -> dst
+                # a1 es una variable/temporal que CONTIENE una DIRECCIÓN
+                rptr = self._read_into_reg(a1)      # rptr = puntero
+                rd, off, sc = self._dest_reg_or_spill(dst)
+                out = rd if rd is not None else sc  # registro donde queremos el valor
+                # *rptr
+                self.w.emit(f"lw {out}, 0({rptr})")
+                if off is not None:
+                    self.w.emit(f"sw {out}, {off}($fp)")
             self.ra.free_if_dead(a1, pc)
             return
 
-        # STORE por dirección explícita
+        # STORE
         if op == "store":
+            # store src, [fp+N]  → acceso directo al frame
             if isinstance(a2, str) and a2.startswith("["):
                 base, byte_off = self._mem_addr(a2)
                 rs = self._read_into_reg(a1)
                 self.w.emit(f"sw {rs}, {byte_off}(${base})")
+                self.ra.free_if_dead(a1, pc)
+                self.ra.free_if_dead(a2, pc)
+                return
             else:
-                # store src -> var
-                rs = self._read_into_reg(a1)
-                rd, off, sc = self._dest_reg_or_spill(a2)
-                if rd: self.w.emit(f"move {rd}, {rs}")
-                else:  self.w.emit(f"sw {rs}, {off}($fp)")
-            self.ra.free_if_dead(a1, pc); self.ra.free_if_dead(a2, pc)
-            return
+                # store src, ptr  → *ptr = src
+                rs   = self._read_into_reg(a1)   # valor a escribir
+                rptr = self._read_into_reg(a2)   # puntero donde escribir
+                self.w.emit(f"sw {rs}, 0({rptr})")
+                self.ra.free_if_dead(a1, pc)
+                self.ra.free_if_dead(a2, pc)
+                return
 
         # BINOPS: + - * / %
         if op in {"+", "-", "*", "/", "%"}:
