@@ -142,35 +142,10 @@ class RegAllocator:
 
     def free_if_dead(self, name: str, pc: Optional[int] = None):
         """
-        Libera el registro asociado a 'name' si ya no está vivo DESPUÉS de la instrucción pc.
-        - name: nombre de variable en la IR.
-        - pc: índice de la instrucción actual (0-based).
-        Si no hay info de liveness, no hace nada (comportamiento seguro).
+        (Temporalmente) no liberamos registros en base a liveness.
+        Esto evita que se pierdan valores que luego se necesitan (como r3).
         """
-        # Sin liveness o sin pc: comportamiento conservador (no liberar).
-        if self.liveness is None or pc is None:
-            return
-
-        if name not in self.loc:
-            return
-
-        if pc < 0 or pc >= len(self.liveness):
-            return
-
-        live_after = self.liveness[pc]
-        if name in live_after:
-            # La variable sigue viva después de esta instrucción: no liberamos.
-            return
-
-        # En este punto, 'name' está muerto: podemos liberar su registro.
-        reg, off = self.loc.pop(name)
-
-        if reg in T_REGS:
-            self.free_t.add(reg)
-        elif reg in S_REGS:
-            self.free_s.add(reg)
-            self.used_s.discard(reg)
-        # Si no tenía registro, no hay nada que hacer (su valor solo estaba en memoria).
+        return
 
     def on_call(self):
         """
