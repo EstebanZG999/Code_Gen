@@ -530,4 +530,20 @@ class MIPSGenerator:
 
     # --- Alias para compatibilidad con tests ---
     def generate_program(self, tac_program) -> str:
-        return self.generate(tac_program)
+        asm = self.generate(tac_program)
+
+        footer = """
+            .data
+        _str_MISALIGNED:
+            .asciiz "MISALIGNED!\\n"
+
+            .text
+            __misaligned_store:
+            la $a0, _str_MISALIGNED
+            li $v0, 4
+            syscall
+
+            li $v0, 10
+            syscall
+        """
+        return asm + footer
