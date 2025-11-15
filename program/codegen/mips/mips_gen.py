@@ -162,6 +162,10 @@ class MIPSGenerator:
         if cand["op"] == ":=":
             cand["op"] = "assign"
 
+        # Normalizar nombre de función en llamadas: quitar comillas si vienen de la IR
+        if cand["op"] == "call" and cand["a1"]:
+            cand["a1"] = cand["a1"].strip('"')
+
         # Si dice ser 'label' pero no trae nombre, intenta derivarlo del texto
         if cand["op"] == "label" and not cand["label"]:
             txt_label = str(q).strip()
