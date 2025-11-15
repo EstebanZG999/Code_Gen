@@ -53,26 +53,71 @@ class MIPSGenerator:
     def _emit_prolog(self, frame: Frame) -> None:
         """
         Emite el prólogo usando frame_size() del Frame.
-        Ubica old $fp y $ra en posiciones que resulten visibles como 4($fp) y 8($fp).
+
+        Objetivo: que tras el prólogo se cumpla el layout relativo a $fp:
+
+            fp + 12 : arg0
+            fp + 16 : arg1
+            fp + 20 : arg2
+            ...
+            fp + 8  : saved $ra
+            fp + 4  : old $fp
+            fp - 4  : local / spill 0
+            fp - 8  : local / spill 1
+            ...
+
+        Elegimos un $fp tal que old $fp y $ra queden accesibles justo en
+        4($fp) y 8($fp), independientemente de frame_size().
         """
         w = self.writer
         fs = frame.frame_size()
-        w.text() 
+
+        w.text()
+        w.emit(f"# --- prologo de {frame.func_name} ---")
+
+        # Reservar todo el frame: locales + spills + espacio para guardar fp/ra
         w.emit(f"addiu $sp,$sp,-{fs}")
-        w.emit(f"sw $ra,{fs-4}($sp)")   # esto quedará accesible como 8($fp)
-        w.emit(f"sw $fp,{fs-8}($sp)")   # esto quedará accesible como 4($fp)
-        w.emit(f"addiu $fp,$sp,{fs-12}")  # fija $fp: así 4($fp) y 8($fp) referencian old fp / $ra
+
+        # Guardar $ra y old $fp en la parte alta del bloque reservado.
+        # Con este patrón, después de fijar $fp, quedarán como:
+        #   old $fp -> 4($fp)
+        #   $ra     -> 8($fp)
+        w.emit(f"sw $ra,{fs-4}($sp)")   # esto termina siendo 8($fp)
+        w.emit(f"sw $fp,{fs-8}($sp)")   # esto termina siendo 4($fp)
+
+        # Fijamos $fp de modo que 4($fp) y 8($fp) apunten a old $fp / $ra,
+        # y los argumentos queden a partir de 12($fp).
+        w.emit(f"addiu $fp,$sp,{fs-12}")
+
+        w.emit(f"# --- fin prologo de {frame.func_name} ---")
 
     def _emit_epilog(self, frame: Frame) -> None:
         """
-        Epílogo inverso del prólogo. Restaura $fp/$ra y retorna.
+        Epílogo inverso del prólogo.
+
+        Aquí asumimos el mismo layout:
+
+            fp + 4 : old $fp
+            fp + 8 : saved $ra
+
+        y devolvemos $sp al valor que tenía la función al entrar
         """
+        # El caller se encarga de limpiar sus argumentos
         w = self.writer
+        w.emit(f"# --- epilogo de {frame.func_name} ---")
+
+        # Volvemos a usar $fp como base para leer old $fp y $ra
         w.emit("move $sp,$fp")
-        w.emit("lw $fp,4($sp)")
-        w.emit("lw $ra,8($sp)")
+        w.emit("lw $fp,4($sp)")   # old $fp
+        w.emit("lw $ra,8($sp)")   # saved $ra
+
+        # Saltamos por encima del bloque [old $fp, $ra, args-header]
+        # para dejar $sp exactamente como al entrar a la función
         w.emit("addiu $sp,$sp,12")
+
         w.emit("jr $ra")
+        w.emit("nop  # delay slot")
+        w.emit(f"# --- fin epilogo de {frame.func_name} ---")
 
     # ---------- Normalizador de quads ----------
     def _normalize_quad(self, q: Any) -> dict:
