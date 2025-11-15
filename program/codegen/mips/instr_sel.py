@@ -120,25 +120,45 @@ class InstructionSelector:
                 self.w.emit(f"bne {rcond}, $zero, {a2}")
                 self.ra.free_if_dead(a1, pc)
             return
-
+        
         # ASSIGN: dst := a1
         if op == "assign":
             if self._is_const(a1):
-                rd, off, sc = self._dest_reg_or_spill(dst)
-                if rd:
-                    self.w.emit(f"li {rd}, {a1}")
+                # Literal de STRING: "..."
+                if a1.startswith('"') and a1.endswith('"'):
+                    label = f"_str_{hash(a1) & 0xFFFF:X}"
+
+                    # Definimos el string en la sección .data
+                    self.w.data()
+                    self.w.label(label)
+                    self.w.emit(f".asciiz {a1}")
+
+                    # Volvemos a .text y cargamos la DIRECCIÓN en el destino
+                    self.w.text()
+                    rd, off, sc = self._dest_reg_or_spill(dst)
+                    if rd:
+                        self.w.emit(f"la {rd}, {label}")
+                    else:
+                        self.w.emit(f"la {sc}, {label}")
+                        self.w.emit(f"sw {sc}, {off}($fp)")
+
+                # Literal NUMÉRICO
                 else:
-                    self.w.emit(f"li {sc}, {a1}")
-                    self.w.emit(f"sw {sc}, {off}($fp)")
+                    rd, off, sc = self._dest_reg_or_spill(dst)
+                    if rd:
+                        self.w.emit(f"li {rd}, {a1}")
+                    else:
+                        self.w.emit(f"li {sc}, {a1}")
+                        self.w.emit(f"sw {sc}, {off}($fp)")
             else:
+                # dst := var/temporal
                 rs = self._read_into_reg(a1)
                 rd, off, sc = self._dest_reg_or_spill(dst)
                 if rd:
                     self.w.emit(f"move {rd}, {rs}")
                 else:
                     self.w.emit(f"sw {rs}, {off}($fp)")
-            # a1 es uso; dst es definición → solo liberamos a1
-            self.ra.free_if_dead(a1, pc)
+
             return
 
         # LOAD
