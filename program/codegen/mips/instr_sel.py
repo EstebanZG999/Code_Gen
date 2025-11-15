@@ -4,13 +4,15 @@ from typing import Dict
 import re
 
 class InstructionSelector:
-    def __init__(self, writer, reg_alloc, frame, string_vars=None):
+    def __init__(self, writer, reg_alloc, frame, string_vars=None, known_funcs=None):
         self.w = writer
         self.ra = reg_alloc
         self.frame = frame
         self.pc = 0
         # conjunto de nombres de variables que guardan direcciones de strings
         self.string_vars = set(string_vars or [])
+        self.known_funcs = set(known_funcs or [])
+
 
     # -------- helpers --------
     def _is_const(self, x: str) -> bool:
@@ -274,8 +276,18 @@ class InstructionSelector:
             for reg, off in saves:
                 self.w.emit(f"sw {reg}, {off}($fp)")
 
-            # nombre de función limpio (por si trae comillas)
+            # nombre base (por si viene con comillas)
             fname = a1.strip('"') if a1 else a1
+
+            # Resolución contra la lista de funciones conocidas
+            if self.known_funcs and fname not in self.known_funcs and "." in fname:
+                parts = fname.split(".")
+                # probamos quitar prefijos de izquierda a derecha: "cuadruple.doble" -> "doble"
+                for i in range(1, len(parts)):
+                    candidate = ".".join(parts[i:])
+                    if candidate in self.known_funcs:
+                        fname = candidate
+                        break
 
             # llamar
             self.w.emit(f"jal {fname}")
@@ -288,8 +300,10 @@ class InstructionSelector:
             # recoger retorno
             if dst:
                 rd, off, sc = self._dest_reg_or_spill(dst)
-                if rd: self.w.emit(f"move {rd}, $v0")
-                else:  self.w.emit(f"sw $v0, {off}($fp)")
+                if rd:
+                    self.w.emit(f"move {rd}, $v0")
+                else:
+                    self.w.emit(f"sw $v0, {off}($fp)")
             return
 
         # DIRECCIONES / MEMORIA DINÁMICA
@@ -324,25 +338,64 @@ class InstructionSelector:
             return
 
         if op == "alloc":
-            # a1 = bytes
-            rn = self._read_into_reg(a1, "$t7")
-            self.w.emit(f"move $a0, {rn}")
-            self.w.emit("li $v0, 9"); self.w.emit("syscall")
+            # a1 puede ser:
+            #  - "16"          (tamaño en bytes)
+            #  - "\"Box\""     (nombre de tipo en la IR)
+            #  - nombre de temporal/var
+            size_expr = a1
+
+            if size_expr is None:
+                # fallback seguro: 4 bytes
+                self.w.emit("li $a0, 4")
+
+            # Caso 1: literal numérico (ej. "16")
+            elif size_expr.lstrip("-").isdigit():
+                self.w.emit(f"li $a0, {size_expr}")
+
+            # Caso 2: literal de cadena (ej. "Box") -> tipo/clase
+            elif size_expr.startswith('"') and size_expr.endswith('"'):
+                type_name = size_expr.strip('"')
+                # Para este proyecto: Box tiene 1 campo int -> 4 bytes
+                # Si luego tienes más clases, aquí haces un map nombre->tamaño
+                size_bytes = 4
+                self.w.emit(f"li $a0, {size_bytes}")
+
+            # Caso 3: viene de una variable/temporal
+            else:
+                rn = self._read_into_reg(size_expr, "$t7")
+                self.w.emit(f"move $a0, {rn}")
+
+            self.w.emit("li $v0, 9")
+            self.w.emit("syscall")
+
             rd, off, sc = self._dest_reg_or_spill(dst, "$t6")
-            if rd: self.w.emit(f"move {rd}, $v0")
-            else:  self.w.emit(f"sw $v0, {off}($fp)")
-            self.ra.free_if_dead(a1, pc)
+            if rd:
+                self.w.emit(f"move {rd}, $v0")
+            else:
+                self.w.emit(f"sw $v0, {off}($fp)")
+
             return
 
         if op == "alloc_array":
-            # a1 = n (int)
-            rn = self._read_into_reg(a1, "$t7")
-            self.w.emit(f"sll $a0, {rn}, 2")
-            self.w.emit("li $v0, 9"); self.w.emit("syscall")
+            # a1 = n (longitud del arreglo)
+            if self._is_const(a1) and not (a1.startswith('"') and a1.endswith('"')):
+                # Longitud constante: li a un scratch y luego *4
+                self.w.emit(f"li $t7, {a1}")
+                self.w.emit("sll $a0, $t7, 2")   # bytes = n * 4
+            else:
+                # Longitud en una variable/temporal
+                rn = self._read_into_reg(a1, "$t7")
+                self.w.emit(f"sll $a0, {rn}, 2")
+
+            self.w.emit("li $v0, 9")
+            self.w.emit("syscall")
+
             rd, off, sc = self._dest_reg_or_spill(dst, "$t6")
-            if rd: self.w.emit(f"move {rd}, $v0")
-            else:  self.w.emit(f"sw $v0, {off}($fp)")
-            self.ra.free_if_dead(a1, pc)
+            if rd:
+                self.w.emit(f"move {rd}, $v0")
+            else:
+                self.w.emit(f"sw $v0, {off}($fp)")
+
             return
         
         # PRINT
