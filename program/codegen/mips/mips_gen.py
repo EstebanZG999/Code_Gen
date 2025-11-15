@@ -72,8 +72,8 @@ class MIPSGenerator:
         w = self.writer
         fs = frame.frame_size()
 
-        if fs < 64:
-            fs = 64
+        if fs < 128:
+            fs = 128
 
         w.text()
         w.emit(f"# --- prologo de {frame.func_name} ---")
@@ -467,6 +467,9 @@ class MIPSGenerator:
         """
         functions = self._split_functions(tac_program)
 
+        # Conjunto de nombres de funciones que realmente existen como labels
+        known_funcs: Set[str] = {f.name for f in functions}
+
         for f in functions:
             frame = Frame(func_name=f.name)
             self.ra.attach_frame(frame)
@@ -488,8 +491,14 @@ class MIPSGenerator:
                 ):
                     string_vars.add(nq["dst"])
 
-            # Pasamos string_vars al selector
-            sel = InstructionSelector(self.writer, self.ra, frame, string_vars=string_vars)
+            # Pasamos string_vars y known_funcs al selector
+            sel = InstructionSelector(
+                self.writer,
+                self.ra,
+                frame,
+                known_funcs=known_funcs,
+                string_vars=string_vars,
+            )
 
             if f.name == "main":
                 # --- main con PRÓLOGO pero sin jr $ra ---
