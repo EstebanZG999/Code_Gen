@@ -274,8 +274,11 @@ class InstructionSelector:
             for reg, off in saves:
                 self.w.emit(f"sw {reg}, {off}($fp)")
 
+            # nombre de función limpio (por si trae comillas)
+            fname = a1.strip('"') if a1 else a1
+
             # llamar
-            self.w.emit(f"jal {a1}")
+            self.w.emit(f"jal {fname}")
 
             # limpiar args apilados
             n = int(a2) if a2 and a2.isdigit() else 0
