@@ -19,15 +19,34 @@ class InstructionSelector:
         return x.lstrip("-").isdigit() or (x.startswith('"') and x.endswith('"'))
 
     def _mem_addr(self, bracketed: str):
-        # parsea "[fp+2]" o "[fp-1]" → (base, offset_en_bytes)
+        """
+        Traduce direcciones TAC tipo [fp+2] o [fp-1] a offsets en bytes.
+        Se añade +4 bytes para alinear con el layout real de frame.py:
+            fp+4  -> old $fp
+            fp+8  -> $ra
+            fp+12 -> arg0
+        Por tanto, [fp+2] debe mapear a 12($fp), no 8($fp).
+        """
         inside = bracketed[1:-1].strip()
         if "+" in inside:
-            base, off = inside.split("+", 1); sgn, val = +1, int(off.strip())
+            base, off = inside.split("+", 1)
+            sgn, val = +1, int(off.strip())
         elif "-" in inside:
-            base, off = inside.split("-", 1); sgn, val = -1, int(off.strip())
+            base, off = inside.split("-", 1)
+            sgn, val = -1, int(off.strip())
         else:
             base, val, sgn = inside, 0, +1
-        return base.strip(), sgn * val * 4
+
+        base = base.strip()
+        byte_off = sgn * val * 4
+
+        # ⚙️ Ajuste especial solo para base == "fp" y desplazamientos positivos:
+        # agrega 4 bytes para compensar que arg0 = fp + 12, no fp + 8
+        if base == "fp" and sgn > 0:
+            byte_off += 4
+
+        return base, byte_off
+
 
     def _save_victim(self, victim):
         # victim = (reg, off)
