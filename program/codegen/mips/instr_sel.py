@@ -12,6 +12,8 @@ class InstructionSelector:
         # conjunto de nombres de variables que guardan direcciones de strings
         self.string_vars = set(string_vars or [])
         self.known_funcs = set(known_funcs or [])
+        self.concat_prefix: Dict[str, str] = {}
+        self.pending_params = []
 
 
     # -------- helpers --------
@@ -59,15 +61,17 @@ class InstructionSelector:
             self.w.emit(f"sw {reg}, {off}($fp)")
 
     def _read_into_reg(self, name: str, scratch: str = "$t9", across: bool = False) -> str:
-        """Devuelve un registro con el valor de 'name'. Maneja spill y víctimas."""
+        # Protección extra: nunca tratar una constante como variable
+        if self._is_const(name):
+            # Esto NO debería pasar; si pasa, mejor que truene en compile-time que en runtime
+            raise RuntimeError(f"_read_into_reg llamado con constante: {name}")
+
         reg, off, victim = self.ra.get_reg(name, across_call=across)
         self._save_victim(victim)
         if reg is None:
-            # trabaja desde memoria a scratch
             self.w.emit(f"lw {scratch}, {off}($fp)")
             return scratch
         if off is not None:
-            # estaba en memoria: cargarlo
             self.w.emit(f"lw {reg}, {off}($fp)")
             self.ra.mark_loaded(name)
         return reg
@@ -202,6 +206,12 @@ class InstructionSelector:
                 # store src, ptr  → *ptr = src
                 rs   = self._read_into_reg(a1)   # valor a escribir
                 rptr = self._read_into_reg(a2)   # puntero donde escribir
+                
+                # DEBUG: chequear alineación SIN tocar rptr
+                #self.w.emit(f"andi $at, {rptr}, 3")
+                #self.w.emit(f"bne $at, $zero, __misaligned_store")
+                #self.w.emit("nop")
+
                 self.w.emit(f"sw {rs}, 0({rptr})")
                 self.ra.free_if_dead(a1, pc)
                 self.ra.free_if_dead(a2, pc)
@@ -209,6 +219,47 @@ class InstructionSelector:
 
         # BINOPS: + - * / %
         if op in {"+", "-", "*", "/", "%"}:
+
+            # --- CASO ESPECIAL: concatenación "string" + int usada para prints ---
+            if op == "+":
+                is_str1 = (
+                    a1 is not None
+                    and isinstance(a1, str)
+                    and a1.startswith('"') and a1.endswith('"')
+                )
+                is_str2 = (
+                    a2 is not None
+                    and isinstance(a2, str)
+                    and a2.startswith('"') and a2.endswith('"')
+                )
+
+                # Patrón: uno es string literal y el otro NO es constante (ej. "r1=" + r1)
+                if (is_str1 and not self._is_const(a2)) or (is_str2 and not self._is_const(a1)):
+                    # Determinar cuál es el prefijo string y cuál es el valor numérico
+                    if is_str1:
+                        prefix = a1
+                        value_name = a2
+                    else:
+                        prefix = a2
+                        value_name = a1
+
+                    # Guardar que 'dst' tiene un prefijo de concatenación
+                    if dst is not None:
+                        self.concat_prefix[dst] = prefix
+
+                    # Semántica "pragmática": dst solo almacena el valor numérico,
+                    # y el prefijo se imprimirá en 'print dst'
+                    rs = self._read_into_reg(value_name, "$t7")
+                    rd, off, sc = self._dest_reg_or_spill(dst, "$t5")
+                    out = rd if rd is not None else sc
+                    self.w.emit(f"move {out}, {rs}")
+                    if off is not None:
+                        self.w.emit(f"sw {out}, {off}($fp)")
+
+                    self.ra.free_if_dead(value_name, pc)
+                    return
+
+            # --- CASO NORMAL: aritmética entera pura ---
             rs = self._read_into_reg(a1, "$t7")
             rt = self._read_into_reg(a2, "$t6")
             rd, off, sc = self._dest_reg_or_spill(dst, "$t5")
@@ -217,12 +268,15 @@ class InstructionSelector:
             elif op == "-": self.w.emit(f"subu {out}, {rs}, {rt}")
             elif op == "*": self.w.emit(f"mul {out}, {rs}, {rt}")
             elif op == "/":
-                self.w.emit(f"div {rs}, {rt}"); self.w.emit(f"mflo {out}")
+                self.w.emit(f"div {rs}, {rt}")
+                self.w.emit(f"mflo {out}")
             elif op == "%":
-                self.w.emit(f"div {rs}, {rt}"); self.w.emit(f"mfhi {out}")
+                self.w.emit(f"div {rs}, {rt}")
+                self.w.emit(f"mfhi {out}")
             if off is not None:
                 self.w.emit(f"sw {out}, {off}($fp)")
-            self.ra.free_if_dead(a1, pc); self.ra.free_if_dead(a2, pc)
+            self.ra.free_if_dead(a1, pc)
+            self.ra.free_if_dead(a2, pc)
             return
 
         # RELACIONALES básicos
