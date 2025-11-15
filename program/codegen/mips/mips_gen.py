@@ -262,15 +262,19 @@ class MIPSGenerator:
     def _split_functions(self, tac_program) -> List[FuncIR]:
         """
         Recorre tac_program.code (lista de quads/labels).
-        Crea FuncIRs cuando detecta 'func_<name>_entry:' y cierra al ver 'func_<name>_end:'.
-        Si no hay marcas de función, asume todo como 'main'.
+        Crea FuncIRs cuando detecta 'func_<name>_entry' / 'func_<name>_end'.
+        Además, cualquier TAC que quede fuera de funciones se mete en un 'main'.
         """
         code: List[Any] = getattr(tac_program, "code", [])
         funcs: List[FuncIR] = []
         cur: Optional[FuncIR] = None
 
+        # TAC de nivel superior (top-level, fuera de cualquier func_..._entry/_end)
+        top_level: List[Any] = []
+
         for q in code:
             txt = str(q).strip()
+
             if txt.endswith(":"):
                 lab = txt[:-1]
                 # Abrir función
@@ -284,14 +288,20 @@ class MIPSGenerator:
                     cur = None
                     continue
 
-            # Acumular quads de la función abierta
+            # Estamos dentro de una función
             if cur is not None:
                 cur.quads.append(self._normalize_quad(q))
+            else:
+                # Estamos fuera de cualquier función: esto es código top-level
+                top_level.append(self._normalize_quad(q))
 
-        # Caso sin etiquetas de función: todo es 'main'
-        if not funcs and code:
-            funcs.append(FuncIR("main", [self._normalize_quad(q) for q in code]))
+        # Si hay código top-level, lo convertimos en función 'main'
+        if top_level:
+            main_ir = FuncIR("main", top_level)
+            # Queremos que main vaya primero en el archivo ASM
+            funcs.insert(0, main_ir)
 
+        # Caso extremo: sin funciones ni top-level, devolvemos lista vacía
         return funcs
 
     # ---------- Análisis de liveness ----------
