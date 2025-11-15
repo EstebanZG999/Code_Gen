@@ -72,6 +72,9 @@ class MIPSGenerator:
         w = self.writer
         fs = frame.frame_size()
 
+        if fs < 64:
+            fs = 64
+
         w.text()
         w.emit(f"# --- prologo de {frame.func_name} ---")
 
